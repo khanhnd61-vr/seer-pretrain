@@ -156,6 +156,14 @@ def train_one_epoch_calvin(
                 text_token=input_text_token,
                 action=actions[:, :args.sequence_length, :],
             )
+        # Under AMP the model returns bf16, but the losses below are computed outside
+        # autocast against fp32 targets, and binary_cross_entropy rejects that mix.
+        # Upcast at the loss boundary (a no-op under --precision fp32) so the loss math
+        # stays fp32-exact; the heavy matmuls already ran in bf16.
+        arm_pred_action = arm_pred_action.float()
+        gripper_pred_action = gripper_pred_action.float()
+        if image_pred is not None:
+            image_pred = image_pred.float()
         # loss_action
         if args.loss_action and args.action_pred_steps:
             loss_arm_action = torch.nn.functional.smooth_l1_loss(

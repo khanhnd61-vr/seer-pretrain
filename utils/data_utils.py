@@ -2393,7 +2393,10 @@ def get_libero_finetune_dataset(args, image_processor, tokenizer, epoch=0, floor
         num_workers=num_workers,
         prefetch_factor=3,
         sampler=sampler,
-        persistent_workers=True,
+        # persistent_workers must be False so the training loop can recycle workers
+        # mid-epoch (train_utils recreates the iterator every WORKER_RECYCLE_EVERY
+        # batches); with True the recycling is a no-op and worker memory grows.
+        persistent_workers=False,
         collate_fn=libero_dataset.collator,
         drop_last=True
     )
