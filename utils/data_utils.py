@@ -1259,9 +1259,10 @@ class BaseDroidDataset(Dataset):
         self.dataset_name = dataset_name 
         self.dataset_info = dataset_info
         self.root_dir = root_dir 
-        self.dataset_path = f'{root_dir}/{dataset_name}' 
+        self.dataset_path = f'{root_dir}/{dataset_name}'
         self.conf_path = '~/petreloss.conf'
-        self.client = Client(self.conf_path)
+        if data_in_ceph:
+            self.client = Client(self.conf_path)
         self.image_primary_size = image_primary_size
         self.image_wrist_size = image_wrist_size
         self.image_preprocess = None
@@ -1512,8 +1513,10 @@ class BaseDroidDataset(Dataset):
         end_id = min(start_id + window_size, num_step_per_episode)
         episode_id = self.episode_list[episode_id]
         episodes = []
+        episode_language = ""
         for step_id in range(start_id, end_id):
             data_dict = {}
+            other_h5_file = None
             try:
                 step_id = str(step_id).zfill(4)
                 other_path = f"{self.dataset_path}/episodes/{episode_id}/steps/{step_id}/other.h5"
@@ -1532,13 +1535,17 @@ class BaseDroidDataset(Dataset):
             data_dict["rel_actions"] = self.load_action(other_h5_file)
             data_dict["robot_obs"] = self.load_robot_obs(other_h5_file)
             data_dict["scene_obs"] = self.load_scene_obs(episode_id, step_id)
+            # language is constant per episode; capture it, then close the h5 handle
+            # to avoid a file-handle leak that OOM-kills the worker over long runs.
+            episode_language = self.load_language_instruction(other_h5_file, self.language_mode)
+            other_h5_file.close()
             episodes.append(data_dict)
-   
+
         keys = list(chain(*self.observation_space.values()))
         keys.remove("language")
         keys.append("scene_obs")
         episode = {key: np.stack([ep[key] for ep in episodes]) for key in keys}
-        episode["language"] = self.load_language_instruction(other_h5_file, self.language_mode)
+        episode["language"] = episode_language
         seq_state_obs = process_state(
             episode, self.observation_space, self.transforms, self.proprio_state
         )
@@ -1766,7 +1773,11 @@ def get_droid_dataset(args, image_processor, tokenizer, epoch=0, floor=False):
         num_workers=num_workers,
         prefetch_factor=3,
         sampler=sampler,
-        persistent_workers=True,
+        # persistent_workers must be False so the training loop can recycle workers
+        # mid-epoch (train_utils recreates the iterator every WORKER_RECYCLE_EVERY
+        # batches) to release accumulated worker memory. With True, workers live for
+        # the whole 3.4-day epoch and leak unboundedly -> OOM.
+        persistent_workers=False,
         collate_fn=droid_dataset.collator,
         drop_last=True
     )
@@ -2980,9 +2991,10 @@ class BaseOXEDataset(Dataset):
         self.dataset_name = dataset_name 
         self.dataset_info = dataset_name
         self.root_dir = root_dir 
-        self.dataset_path = f'{root_dir}/{dataset_name}' 
+        self.dataset_path = f'{root_dir}/{dataset_name}'
         self.conf_path = '~/petreloss.conf'
-        self.client = Client(self.conf_path)
+        if data_in_ceph:
+            self.client = Client(self.conf_path)
         self.image_primary_size = image_primary_size
         self.image_wrist_size = image_wrist_size
         self.image_preprocess = None

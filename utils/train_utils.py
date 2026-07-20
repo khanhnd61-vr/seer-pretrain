@@ -1,4 +1,6 @@
 import time
+import os
+import gc
 from contextlib import suppress
 
 import torch
@@ -55,6 +57,27 @@ def normalize_patchfied_image(patchfied_imgs):
 
     return patchfied_imgs
 
+def _batch_iter_with_worker_recycling(loader, epoch, num_batches, recycle_every):
+    """Yield (step, batch) for one epoch, recreating the DataLoader iterator every
+    `recycle_every` batches. With persistent_workers=False this kills the old
+    workers and spawns fresh ones, releasing their accumulated memory (the loader
+    leaks slowly and our epochs are ~days long, so per-epoch recycling isn't
+    enough). Preserves the 0..num_batches-1 step ordering the train loop expects.
+    Each cycle uses a fresh sampler shuffle so we keep seeing varied data."""
+    produced, cycle = 0, 0
+    while produced < num_batches:
+        if hasattr(loader, "sampler") and hasattr(loader.sampler, "set_epoch"):
+            loader.sampler.set_epoch(epoch * 100000 + cycle)
+        data_iter = iter(loader)
+        for batch in data_iter:
+            yield produced, batch
+            produced += 1
+            if produced >= num_batches or (produced % recycle_every == 0):
+                break
+        del data_iter          # shut down this cycle's workers
+        gc.collect()
+        cycle += 1
+
 def train_one_epoch_calvin(
     args,
     model,
@@ -80,9 +103,11 @@ def train_one_epoch_calvin(
         AverageMeter()
     )  # avg time to load one batch of both calvin (= 1 batch regardless of gradient accum)
     end = time.time()
-    # loop through dataloader
+    # loop through dataloader, recycling workers every WORKER_RECYCLE_EVERY batches
+    # to cap dataloader-worker memory growth (default 2000 ~= 17min at 2 it/s).
+    worker_recycle_every = int(os.environ.get("WORKER_RECYCLE_EVERY", "2000"))
     t = tqdm(
-        enumerate(calvin_loader),
+        _batch_iter_with_worker_recycling(calvin_loader, epoch, num_batches_per_epoch, worker_recycle_every),
         disable=args.rank != 0,
         total=total_training_steps,
         initial=(epoch * num_batches_per_epoch),
@@ -225,27 +250,23 @@ def train_one_epoch_calvin(
         avg_horizon = min(100, len(mv_avg_loss))
         t.set_postfix({"avg loss": sum(mv_avg_loss[-avg_horizon:]) / avg_horizon, "loss": loss_calvin.item(), "loss_image": loss_image.item(), "loss_arm_action": loss_arm_action.item(), "loss_gripper_action": loss_gripper_action.item()})
 
-        # if args.save_every_iter != -1 and args.save_checkpoint and global_step % args.save_every_iter == 0 and global_step > 0:
-                
-        #     if args.rank == 0:
-        #         import os
-        #         if not os.path.exists(f"{args.save_checkpoint_path}/exp/{args.run_name}"):
-        #             os.makedirs(f"{args.save_checkpoint_path}/exp/{args.run_name}")
+        if args.save_every_iter != -1 and args.save_checkpoint and global_step % args.save_every_iter == 0 and global_step > 0:
+            if args.rank == 0:
+                exp_dir = f"{args.save_checkpoint_path}/exp/{args.run_name}"
+                if not os.path.exists(exp_dir):
+                    os.makedirs(exp_dir)
 
-        #         checkpoint_dict = {
-        #             "epoch": epoch,
-        #             "model_state_dict": get_checkpoint(model),
-        #             "optimizer_state_dict": optimizer.state_dict(),
-        #             "lr_scheduler_state_dict": lr_scheduler.state_dict(),
-        #         }
+                checkpoint_dict = {
+                    "epoch": epoch,
+                    "model_state_dict": get_checkpoint(model),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "lr_scheduler_state_dict": lr_scheduler.state_dict(),
+                }
 
-        #         ckpt_name = get_ckpt_name(args, global_step)
-        #         ckpt_path = os.path.join(f"{args.save_checkpoint_path}/exp", args.run_name, ckpt_name)
-        #         print(f"Saving checkpoint to {ckpt_path}")
-        #         torch.save(checkpoint_dict, ckpt_path)
-        #         if args.delete_previous_checkpoint:
-        #             if epoch > 0:
-        #                 os.remove(ckpt_path)
+                ckpt_name = get_ckpt_name(args, global_step)
+                ckpt_path = os.path.join(exp_dir, ckpt_name)
+                print(f"Saving checkpoint to {ckpt_path}")
+                torch.save(checkpoint_dict, ckpt_path)
 
 def get_checkpoint(model):
     state_dict = model.state_dict()

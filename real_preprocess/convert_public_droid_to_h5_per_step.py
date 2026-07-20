@@ -15,6 +15,7 @@ import yaml
 from PIL import Image
 import pybullet as p
 import time
+from datetime import timedelta
 
 from pdb import set_trace
 import math
@@ -174,7 +175,12 @@ def convert_action(actions, gripper_positions, start_gripper_pose):
 def setup(rank, world_size, port):
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(port)
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    # This job never touches the GPU, and ranks reach the final barrier many
+    # minutes apart. nccl would rendezvous every rank on GPU 0 and blow the
+    # 300s c10d store timeout while the stragglers catch up.
+    dist.init_process_group(
+        "gloo", rank=rank, world_size=world_size, timeout=timedelta(hours=12)
+    )
 
 def to_np_dtype(maybe_tf_dtype):
     dtype_map = {
@@ -206,6 +212,7 @@ class DatasetConverter:
         start_episode_idx,
         end_episode_idx,
         flag,
+        resume=True,
     ):
         self.src_dir = src_dir
         self.tgt_dir = tgt_dir
@@ -214,7 +221,35 @@ class DatasetConverter:
         self.start_episode_idx = start_episode_idx
         self.end_episode_idx = end_episode_idx
         self.flag = flag
+        self.resume = resume
         self.gripper_open_criterion = 13 / 255
+
+    def episode_is_complete(self, episode_dir):
+        """An episode counts as done only if every step it claims was written.
+
+        process_episode writes meta_info.h5 before the steps, so a directory
+        existing says nothing about whether the episode finished.
+        """
+        meta_path = episode_dir/'meta_info.h5'
+        if not meta_path.exists():
+            return False
+        try:
+            with h5py.File(meta_path, 'r') as h5_file:
+                num_steps = int(h5_file['length'][()])
+        except Exception:
+            return False
+
+        steps_dir = episode_dir/'steps'
+        if not steps_dir.is_dir():
+            return False
+        if sum(1 for _ in steps_dir.iterdir()) != num_steps:
+            return False
+
+        last_step = steps_dir/str(num_steps - 1).zfill(4)
+        return all(
+            (last_step/name).exists()
+            for name in ('other.h5', 'image_primary.jpg', 'image_wrist.jpg', 'image_3.jpg')
+        )
 
     def process_episode(self, episode_dir, episode, episode_index, flag):
         # get success or not
@@ -432,8 +467,12 @@ class DatasetConverter:
             if episode_index % self.num_worker != self.rank:
                 continue
 
+            if self.resume and self.episode_is_complete(episodes_dir/str(episode_index).zfill(6)):
+                continue
+
             self.process_episode(episode_dir=episodes_dir, episode=episode, episode_index=episode_index, flag=flag)
-        dist.barrier()
+        if dist.is_initialized():
+            dist.barrier()
             
     def run(self):
         builder = tfds.builder_from_directory(builder_dir=str(self.src_dir))
@@ -446,9 +485,9 @@ def main(rank, port, num_worker, start_episode_idx=0, end_episode_idx=None, flag
     if num_worker > 1:
         setup(rank, world_size=num_worker, port=port)
 
-    src_dir = f"your_path_to_droid/1.0.0" # 
-    tgt_dir = Path(f"droid_{flag}")
-    tgt_dir.mkdir(exist_ok=True) 
+    src_dir = f"/mnt/data/droid/1.0.0"
+    tgt_dir = Path(f"/mnt/data/droid/droid_success")
+    tgt_dir.mkdir(parents=True, exist_ok=True)
 
     dataset_converter = DatasetConverter(
         src_dir=src_dir,
@@ -460,6 +499,9 @@ def main(rank, port, num_worker, start_episode_idx=0, end_episode_idx=None, flag
         flag=flag,
     )
     dataset_converter.run()
+
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 if __name__ == '__main__':
     start_episode_idx = 0

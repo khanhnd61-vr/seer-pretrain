@@ -227,8 +227,8 @@ def main(rank, port, num_worker, start_episode_idx=0, end_episode_idx=None):
 
     global dataset_name
     dataset_name = "libero_90" # "libero_10"
-    src_dir = f"/fs-computility/efm/shared/datasets/Banana/tianyang/Data/{dataset_name}"
-    tgt_dir = Path(f"/fs-computility/efm/shared/datasets/Banana/tianyang/Data/{dataset_name}_converted")
+    src_dir = f"/mnt/data/libero_100/{dataset_name}"
+    tgt_dir = Path(f"/mnt/data/libero_100/{dataset_name}_converted")
     tgt_dir.mkdir(exist_ok=True) 
 
     dataset_converter = DatasetConverter(
