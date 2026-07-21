@@ -2,8 +2,8 @@ import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
-os.environ["PYOPENGL_PLATFORM"] = "osmesa"
-os.environ['MUJOCO_GL'] = 'osmesa'
+os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
+os.environ.setdefault('MUJOCO_GL', 'osmesa')
 
 from pathlib import Path
 import copy
@@ -243,7 +243,7 @@ def evaluate_policy_ddp(args, model):
         init_states_path = os.path.join(
             f"{args.libero_path}/libero/libero/init_files", task.problem_folder, task.init_states_file
         )
-        init_states = torch.load(init_states_path)
+        init_states = torch.load(init_states_path, weights_only=False)
         init_state = init_states[exp_id]
         obs = env.set_init_state(init_state)
 

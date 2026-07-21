@@ -87,7 +87,7 @@ def main():
     if args.resume_from_checkpoint is not None:
         if args.rank == 0:
             print(f"Loading checkpoint from {args.resume_from_checkpoint}")
-        checkpoint = torch.load(args.resume_from_checkpoint, map_location="cpu")
+        checkpoint = torch.load(args.resume_from_checkpoint, map_location="cpu", weights_only=False)
         ddp_model.load_state_dict(checkpoint["model_state_dict"], False)
 
     ddp_model.eval()

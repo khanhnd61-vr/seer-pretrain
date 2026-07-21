@@ -273,7 +273,7 @@ class SeerAgent(nn.Module):
         self.initialize_weights()
 
         # freeze vision encoder
-        vit_checkpoint = torch.load(self.vit_checkpoint_path, map_location='cpu')
+        vit_checkpoint = torch.load(self.vit_checkpoint_path, map_location='cpu', weights_only=False)
         msg = self.vision_encoder.load_state_dict(vit_checkpoint['model'], strict=False)
 
         # # freeze text encoder
